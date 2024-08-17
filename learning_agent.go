@@ -2,8 +2,20 @@ package topdown
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 )
+
+// StartServer starts the HTTP server that handles GET and SET requests for metrics and rate limits.
+func StartServer(rl *TopDownRL) {
+	http.HandleFunc("/metrics", rl.HandleGetMetrics)    // Handles GET requests to fetch metrics
+	http.HandleFunc("/set_rate", rl.HandleSetRateLimit) // Handles POST requests to set the rate limit
+
+	log.Println("Starting server on :8080")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Fatalf("Could not start server: %s\n", err)
+	}
+}
 
 // SetRateLimit sets the rate limit (token bucket refill rate) from an external source.
 func (rl *TopDownRL) SetRateLimit(rateLimit float64) {
@@ -20,7 +32,7 @@ func (rl *TopDownRL) GetMetrics() (float64, float64) {
 }
 
 // handleSetRateLimit handles the SET requests to update the rate limit.
-func (rl *TopDownRL) handleSetRateLimit(w http.ResponseWriter, r *http.Request) {
+func (rl *TopDownRL) HandleSetRateLimit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
 		return
@@ -39,7 +51,7 @@ func (rl *TopDownRL) handleSetRateLimit(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleGetMetrics handles the GET requests to return goodput and latency.
-func (rl *TopDownRL) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
+func (rl *TopDownRL) HandleGetMetrics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
 		return

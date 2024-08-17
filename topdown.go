@@ -100,12 +100,7 @@ func (rl *TopDownRL) StartMetricsCollection() {
 }
 
 // UnaryInterceptor is the unary gRPC interceptor function that enforces rate limiting.
-func (rl *TopDownRL) UnaryInterceptor(
-	ctx context.Context,
-	req interface{},
-	info *grpc.UnaryServerInfo,
-	handler grpc.UnaryHandler,
-) (interface{}, error) {
+func (rl *TopDownRL) UnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 	// Extract the method name and start time
 	methodName := getMethodName(ctx)
 	startTime := extractStartTime(ctx)
