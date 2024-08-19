@@ -68,9 +68,9 @@ func getMethodName(ctx context.Context) string {
 
 // saveMetrics saves the current goodput and latency before resetting the counters.
 func (rl *TopDownRL) saveMetrics() {
-	currentGoodput := atomic.SwapInt64(&rl.goodputCounter, 0)
+	rl.currentGoodput = atomic.SwapInt64(&rl.goodputCounter, 0)
 	if rl.Debug {
-		fmt.Printf("[DEBUG] Goodput for this interval: %d\n", currentGoodput)
+		fmt.Printf("[DEBUG] Goodput for this interval: %d\n", rl.currentGoodput)
 	}
 }
 
