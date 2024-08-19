@@ -2,6 +2,7 @@ package topdown
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -10,6 +11,9 @@ import (
 
 // // getGoodput calculates the goodput based on the request and response.
 func (rl *TopDownRL) getGoodput() int64 {
+	if rl.Debug {
+		fmt.Println("[DEBUG] getGoodput called, currentGoodput=", rl.currentGoodput)
+	}
 	return rl.currentGoodput
 }
 
@@ -22,9 +26,9 @@ func (rl *TopDownRL) getGoodput() int64 {
 
 // getTailLatency95th returns the most recently calculated 95th percentile tail latency.
 func (rl *TopDownRL) getTailLatency95th() time.Duration {
-	rl.mutex.Lock()
-	defer rl.mutex.Unlock()
-
+	if rl.Debug {
+		fmt.Println("[DEBUG] getTailLatency95th called, LastTailLatency95th=", rl.LastTailLatency95th)
+	}
 	return rl.LastTailLatency95th
 }
 
@@ -64,6 +68,8 @@ func getMethodName(ctx context.Context) string {
 // saveMetrics saves the current goodput and latency before resetting the counters.
 func (rl *TopDownRL) saveMetrics() {
 	rl.currentGoodput = rl.goodputCounter
+	// reset the goodput counter
+	rl.goodputCounter = 0
 }
 
 // extractStartTime extracts the start time from the gRPC metadata.
