@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -34,8 +35,7 @@ func NewTopDownRL(maxTokens, refillRate int64, slo map[string]time.Duration, deb
 		refillRate:     refillRate,
 		lastRefill:     time.Now(),
 		slo:            slo,
-		currentGoodput: 0,
-		// sloViolationHistory: make([]int64, 0),
+		goodputCounter: 0,
 		latencyHistory: make([]time.Duration, 0),
 		Debug:          debug,
 	}
@@ -73,7 +73,7 @@ func (rl *TopDownRL) postProcess(latency time.Duration, methodName string) {
 	defer rl.mutex.Unlock()
 
 	if latency <= rl.slo[methodName] {
-		rl.goodputCounter++
+		atomic.AddInt64(&rl.goodputCounter, 1)
 	} else {
 		rl.sloViolationCounter++
 	}
@@ -95,10 +95,10 @@ func (rl *TopDownRL) StartMetricsCollection() {
 				// Calculate the 95th percentile tail latency and save it
 				rl.calculateTailLatency95th()
 
+				rl.mutex.Unlock()
+
 				// Save the metrics (goodput and latency) to history
 				rl.saveMetrics()
-
-				rl.mutex.Unlock()
 			}
 		}
 	}()

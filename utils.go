@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc/metadata"
@@ -67,9 +68,10 @@ func getMethodName(ctx context.Context) string {
 
 // saveMetrics saves the current goodput and latency before resetting the counters.
 func (rl *TopDownRL) saveMetrics() {
-	rl.currentGoodput = rl.goodputCounter
-	// reset the goodput counter
-	rl.goodputCounter = 0
+	currentGoodput := atomic.SwapInt64(&rl.goodputCounter, 0)
+	if rl.Debug {
+		fmt.Printf("[DEBUG] Goodput for this interval: %d\n", currentGoodput)
+	}
 }
 
 // extractStartTime extracts the start time from the gRPC metadata.
