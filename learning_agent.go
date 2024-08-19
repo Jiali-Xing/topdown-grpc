@@ -2,19 +2,23 @@ package topdown
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 )
 
 // StartServer starts the HTTP server that handles GET and SET requests for metrics and rate limits.
-func StartServer(rl *TopDownRL) {
+func (rl *TopDownRL) StartServer(portn int) error {
 	http.HandleFunc("/metrics", rl.HandleGetMetrics)    // Handles GET requests to fetch metrics
 	http.HandleFunc("/set_rate", rl.HandleSetRateLimit) // Handles POST requests to set the rate limit
 
-	log.Println("Starting server on :8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	portStr := fmt.Sprintf(":%d", portn)
+	log.Println("Starting server on port", portStr)
+	if err := http.ListenAndServe(portStr, nil); err != nil {
 		log.Fatalf("Could not start server: %s\n", err)
+		return err
 	}
+	return nil
 }
 
 // SetRateLimit sets the rate limit (token bucket refill rate) from an external source.
