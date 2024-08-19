@@ -28,7 +28,7 @@ type TopDownRL struct {
 
 // NewTopDownRL creates a new TopDownRL with the specified parameters.
 func NewTopDownRL(maxTokens, refillRate int64, slo map[string]time.Duration, debug bool) *TopDownRL {
-	return &TopDownRL{
+	rl := &TopDownRL{
 		maxTokens:      maxTokens,
 		tokens:         maxTokens,
 		refillRate:     refillRate,
@@ -39,6 +39,9 @@ func NewTopDownRL(maxTokens, refillRate int64, slo map[string]time.Duration, deb
 		latencyHistory: make([]time.Duration, 0),
 		Debug:          debug,
 	}
+
+	rl.StartMetricsCollection()
+	return rl
 }
 
 // Allow checks if a request is allowed to proceed based on the token bucket algorithm.
