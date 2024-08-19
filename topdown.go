@@ -27,7 +27,7 @@ type TopDownRL struct {
 }
 
 // NewTopDownRL creates a new TopDownRL with the specified parameters.
-func NewTopDownRL(maxTokens, refillRate int64, slo map[string]time.Duration) *TopDownRL {
+func NewTopDownRL(maxTokens, refillRate int64, slo map[string]time.Duration, debug bool) *TopDownRL {
 	return &TopDownRL{
 		maxTokens:      maxTokens,
 		tokens:         maxTokens,
@@ -37,6 +37,7 @@ func NewTopDownRL(maxTokens, refillRate int64, slo map[string]time.Duration) *To
 		currentGoodput: 0,
 		// sloViolationHistory: make([]int64, 0),
 		latencyHistory: make([]time.Duration, 0),
+		Debug:          debug,
 	}
 }
 
