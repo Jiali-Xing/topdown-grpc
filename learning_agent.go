@@ -13,7 +13,7 @@ func (rl *TopDownRL) StartServer(portn int) error {
 	http.HandleFunc("/set_rate", rl.HandleSetRateLimit) // Handles POST requests to set the rate limit
 
 	portStr := fmt.Sprintf(":%d", portn)
-	log.Println("Starting server on port", portStr)
+	log.Println("Starting Topdown RL agent server on", portStr)
 	if err := http.ListenAndServe(portStr, nil); err != nil {
 		log.Fatalf("Could not start server: %s\n", err)
 		return err
@@ -37,6 +37,10 @@ func (rl *TopDownRL) GetMetrics() (float64, float64) {
 
 // handleSetRateLimit handles the SET requests to update the rate limit.
 func (rl *TopDownRL) HandleSetRateLimit(w http.ResponseWriter, r *http.Request) {
+	if rl.Debug {
+		log.Println("[DEBUG] HandleSetRateLimit called")
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
 		return
@@ -50,18 +54,29 @@ func (rl *TopDownRL) HandleSetRateLimit(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if rl.Debug {
+		log.Printf("[DEBUG] Received new rate limit: %f\n", data.RateLimit)
+	}
+
 	rl.SetRateLimit(data.RateLimit)
 	w.WriteHeader(http.StatusOK)
 }
 
 // handleGetMetrics handles the GET requests to return goodput and latency.
 func (rl *TopDownRL) HandleGetMetrics(w http.ResponseWriter, r *http.Request) {
+	if rl.Debug {
+		log.Println("[DEBUG] HandleGetMetrics called")
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
 		return
 	}
 
 	goodput, latency := rl.GetMetrics()
+
+	if rl.Debug {
+		log.Printf("[DEBUG] Returning metrics: Goodput=%f, Latency=%f\n", goodput, latency)
+	}
 
 	response := struct {
 		Goodput float64 `json:"goodput"`

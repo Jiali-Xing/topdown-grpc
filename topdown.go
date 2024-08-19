@@ -23,6 +23,7 @@ type TopDownRL struct {
 	latencyHistory      []time.Duration
 	LastTailLatency95th time.Duration // Stores the 95th percentile latency
 	mutex               sync.Mutex
+	Debug               bool
 }
 
 // NewTopDownRL creates a new TopDownRL with the specified parameters.
