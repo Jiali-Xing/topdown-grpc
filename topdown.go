@@ -50,12 +50,12 @@ func (rl *TopDownRL) Allow(ctx context.Context) bool {
 	defer rl.mutex.Unlock()
 
 	now := time.Now()
-	elapsed := now.Sub(rl.lastRefill)
+	elapsed := now.Sub(rl.lastRefill).Seconds()
 
-	// Refill tokens based on the elapsed time and rate limit
-	refillTokens := int(elapsed.Seconds()) * int(rl.refillRate)
+	// Calculate the number of tokens to refill (using integer arithmetic)
+	refillTokens := int64(elapsed * float64(rl.refillRate))
 	if refillTokens > 0 {
-		rl.tokens = intMin(rl.tokens+int64(refillTokens), rl.maxTokens)
+		rl.tokens = intMin(rl.tokens+refillTokens, rl.maxTokens)
 		rl.lastRefill = now
 	}
 
@@ -63,7 +63,6 @@ func (rl *TopDownRL) Allow(ctx context.Context) bool {
 		rl.tokens--
 		return true
 	}
-
 	return false
 }
 

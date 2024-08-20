@@ -18,13 +18,6 @@ func (rl *TopDownRL) getGoodput() int64 {
 	return rl.currentGoodput
 }
 
-// func (rl *TopDownRL) calculateSloViolation() int64 {
-// 	if len(rl.sloViolationHistory) < 2 {
-// 		return 0 // Not enough data, return 0 or a default value
-// 	}
-// 	return rl.sloViolationHistory[len(rl.sloViolationHistory)-2]
-// }
-
 // getTailLatency95th returns the most recently calculated 95th percentile tail latency.
 func (rl *TopDownRL) getTailLatency95th() time.Duration {
 	if rl.Debug {
