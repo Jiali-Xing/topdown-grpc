@@ -2,12 +2,13 @@ package topdown
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // TopDownRL is the RL-based rate limiter for the gRPC server.
@@ -111,7 +112,8 @@ func (rl *TopDownRL) UnaryInterceptor(ctx context.Context, req interface{}, info
 
 	// Check if the request is allowed before handling it
 	if !rl.Allow(ctx) {
-		return nil, fmt.Errorf("rate limit exceeded")
+		// ResourceExhausted: use this status code if the rate limit is exceeded
+		return nil, status.Error(codes.ResourceExhausted, "Rate limit exceeded, request denied")
 	}
 
 	// Proceed with the handler to get the response
