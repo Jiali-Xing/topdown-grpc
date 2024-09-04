@@ -1,10 +1,16 @@
 package topdown
 
 import (
+	"context"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 // InterfaceMetrics stores metrics for each interface (e.g., method).
@@ -154,4 +160,32 @@ func (rl *TopDownRL) GetMetrics(methodName string) (int64, time.Duration) {
 func (rl *TopDownRL) SetRateLimit(methodName string, rateLimit int64) {
 	metrics := rl.getOrCreateInterfaceMetrics(methodName)
 	metrics.MaxTokens = rateLimit
+}
+
+// UnaryInterceptor is the unary gRPC interceptor function that enforces rate limiting.
+func (rl *TopDownRL) UnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	// Extract the method name from the context
+
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, status.Errorf(codes.InvalidArgument, "missing metadata")
+	}
+
+	methodName := md["method"][0]
+	startTime := time.Now()
+
+	// Check if the request is allowed to proceed
+	if !rl.Allow(methodName) {
+		// ResourceExhausted: use this status code if the rate limit is exceeded
+		return nil, status.Error(codes.ResourceExhausted, "Rate limit exceeded, request denied")
+	}
+
+	// Proceed with the handler
+	resp, err := handler(ctx, req)
+
+	// Calculate the request latency and update metrics after the request is processed
+	latency := time.Since(startTime)
+	rl.PostProcess(latency, methodName)
+
+	return resp, err
 }
