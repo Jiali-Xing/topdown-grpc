@@ -27,12 +27,23 @@ type TopDownRL struct {
 	Debug      bool
 }
 
-// NewTopDownRL creates a new TopDownRL with the specified SLOs and debug flag.
-func NewTopDownRL(slo map[string]time.Duration, debug bool) *TopDownRL {
+// NewTopDownRL creates a new TopDownRL with the specified SLOs, max tokens, refill rate, and debug flag.
+func NewTopDownRL(slo map[string]time.Duration, maxTokens, refillRate int64, debug bool) *TopDownRL {
 	rl := &TopDownRL{
 		interfaces: make(map[string]*InterfaceMetrics),
 		slo:        slo,
 		Debug:      debug,
+	}
+
+	// Initialize each interface with the provided maxTokens and refillRate
+	for methodName := range slo {
+		rl.interfaces[methodName] = &InterfaceMetrics{
+			MaxTokens:      maxTokens,
+			Tokens:         maxTokens,
+			RefillRate:     refillRate,
+			LastRefill:     time.Now(),
+			LatencyHistory: make([]time.Duration, 0),
+		}
 	}
 
 	rl.StartMetricsCollection()
