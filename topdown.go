@@ -2,6 +2,7 @@ package topdown
 
 import (
 	"context"
+	"log"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -56,21 +57,22 @@ func NewTopDownRL(slo map[string]time.Duration, maxTokens, refillRate int64, deb
 	return rl
 }
 
-// getOrCreateInterfaceMetrics initializes or retrieves metrics for an interface.
-func (rl *TopDownRL) getOrCreateInterfaceMetrics(methodName string) *InterfaceMetrics {
+// getInterfaceMetrics retrieves metrics for an existing interface.
+// Returns nil if the interface does not exist.
+func (rl *TopDownRL) getInterfaceMetrics(methodName string) *InterfaceMetrics {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 
-	if _, exists := rl.interfaces[methodName]; !exists {
-		rl.interfaces[methodName] = &InterfaceMetrics{
-			MaxTokens:      10000, // Default values, adjust as necessary
-			Tokens:         100,
-			RefillRate:     1000, // Default refill rate
-			LastRefill:     time.Now(),
-			LatencyHistory: make([]time.Duration, 0),
-		}
+	// Check if the metrics exist for the method
+	if metrics, exists := rl.interfaces[methodName]; exists {
+		return metrics
 	}
-	return rl.interfaces[methodName]
+
+	// If the metrics do not exist, return nil or handle the error accordingly
+	if rl.Debug {
+		log.Printf("[DEBUG] Metrics for method '%s' do not exist.\n", methodName)
+	}
+	return nil
 }
 
 // Allow checks if a request is allowed for the given interface based on the token bucket algorithm.
@@ -78,7 +80,7 @@ func (rl *TopDownRL) Allow(methodName string) bool {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 
-	metrics := rl.getOrCreateInterfaceMetrics(methodName)
+	metrics := rl.getInterfaceMetrics(methodName)
 	now := time.Now()
 	elapsed := now.Sub(metrics.LastRefill).Seconds()
 
@@ -98,7 +100,11 @@ func (rl *TopDownRL) Allow(methodName string) bool {
 
 // postProcess updates goodput, SLO violations, and latency for a given interface.
 func (rl *TopDownRL) PostProcess(latency time.Duration, methodName string) {
-	metrics := rl.getOrCreateInterfaceMetrics(methodName)
+	// lock the mutex to update the metrics
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	metrics := rl.getInterfaceMetrics(methodName)
 
 	if latency <= rl.slo[methodName] {
 		atomic.AddInt64(&metrics.GoodputCounter, 1)
@@ -111,7 +117,7 @@ func (rl *TopDownRL) PostProcess(latency time.Duration, methodName string) {
 
 // calculateTailLatency95th calculates the 95th percentile tail latency for a given interface.
 func (rl *TopDownRL) calculateTailLatency95th(methodName string) time.Duration {
-	metrics := rl.getOrCreateInterfaceMetrics(methodName)
+	metrics := rl.getInterfaceMetrics(methodName)
 	if len(metrics.LatencyHistory) == 0 {
 		return 0
 	}
@@ -146,20 +152,6 @@ func (rl *TopDownRL) StartMetricsCollection() {
 			rl.mutex.Unlock()
 		}
 	}()
-}
-
-// GetMetrics retrieves goodput and 95th percentile latency for a given interface.
-func (rl *TopDownRL) GetMetrics(methodName string) (int64, time.Duration) {
-	metrics := rl.getOrCreateInterfaceMetrics(methodName)
-	goodput := atomic.SwapInt64(&metrics.GoodputCounter, 0)
-
-	return goodput, metrics.LastTailLatency95th
-}
-
-// SetRateLimit sets the rate limit for a specific interface.
-func (rl *TopDownRL) SetRateLimit(methodName string, rateLimit int64) {
-	metrics := rl.getOrCreateInterfaceMetrics(methodName)
-	metrics.MaxTokens = rateLimit
 }
 
 // UnaryInterceptor is the unary gRPC interceptor function that enforces rate limiting.
