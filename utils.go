@@ -3,6 +3,7 @@ package topdown
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -10,44 +11,33 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-// // getGoodput calculates the goodput based on the request and response.
-func (rl *TopDownRL) getGoodput() int64 {
-	if rl.Debug {
-		fmt.Println("[DEBUG] getGoodput called, currentGoodput=", rl.currentGoodput)
-	}
-	return rl.currentGoodput
-}
-
-// getTailLatency95th returns the most recently calculated 95th percentile tail latency.
-func (rl *TopDownRL) getTailLatency95th() time.Duration {
-	if rl.Debug {
-		fmt.Println("[DEBUG] getTailLatency95th called, LastTailLatency95th=", rl.LastTailLatency95th)
-	}
-	return rl.LastTailLatency95th
-}
-
 // calculateTailLatency95th calculates the 95th percentile tail latency from the current latency history.
-func (rl *TopDownRL) calculateTailLatency95th() time.Duration {
-	if len(rl.latencyHistory) == 0 {
+func (rl *TopDownRL) calculateTailLatency95th(methodName string) time.Duration {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	metrics := rl.interfaces[methodName]
+
+	// do the same thing as in the original code but with the metrics
+	if len(metrics.LatencyHistory) == 0 {
 		return 0 // No data, return 0 or a default value
 	}
 
 	// Sort the latencies to find the 95th percentile
-	sort.Slice(rl.latencyHistory, func(i, j int) bool {
-		return rl.latencyHistory[i] < rl.latencyHistory[j]
+	sort.Slice(metrics.LatencyHistory, func(i, j int) bool {
+		return metrics.LatencyHistory[i] < metrics.LatencyHistory[j]
 	})
 
-	// Calculate the 95th percentile index
-	index := int(float64(len(rl.latencyHistory)) * 0.95)
-	if index >= len(rl.latencyHistory) {
-		index = len(rl.latencyHistory) - 1
+	index := int(float64(len(metrics.LatencyHistory)) * 0.95)
+	if index >= len(metrics.LatencyHistory) {
+		index = len(metrics.LatencyHistory) - 1
 	}
 
 	// Update the last 95th percentile latency and clear the history for the next second
-	rl.LastTailLatency95th = rl.latencyHistory[index]
-	rl.latencyHistory = rl.latencyHistory[:0] // Clear the latency history
+	metrics.LastTailLatency95th = metrics.LatencyHistory[index]
+	metrics.LatencyHistory = metrics.LatencyHistory[:0] // Clear the latency history
 
-	return rl.LastTailLatency95th
+	return metrics.LastTailLatency95th
 }
 
 // getMethodName extracts the method name from the gRPC metadata.
@@ -56,14 +46,17 @@ func getMethodName(ctx context.Context) string {
 	if methodNames, exists := md["method"]; exists && len(methodNames) > 0 {
 		return methodNames[0]
 	}
+	log.Panicf("Method name not found in metadata: %v", md)
 	return ""
 }
 
 // saveMetrics saves the current goodput and latency before resetting the counters.
-func (rl *TopDownRL) saveMetrics() {
-	rl.currentGoodput = atomic.SwapInt64(&rl.goodputCounter, 0)
+func (rl *TopDownRL) saveMetrics(methodName string) {
+	metrics := rl.interfaces[methodName]
+
+	metrics.CurrentGoodput = atomic.SwapInt64(&metrics.GoodputCounter, 0)
 	if rl.Debug {
-		fmt.Printf("[DEBUG] Goodput for this interval: %d\n", rl.currentGoodput)
+		fmt.Printf("[DEBUG] Goodput for this interval: %d\n", metrics.CurrentGoodput)
 	}
 }
 

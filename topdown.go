@@ -11,34 +11,67 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+type InterfaceMetrics struct {
+	MaxTokens           int64
+	Tokens              int64
+	RefillRate          int64
+	LastRefill          time.Time
+	GoodputCounter      int64
+	CurrentGoodput      int64
+	SloViolationCounter int64
+	LatencyHistory      []time.Duration
+	LastTailLatency95th time.Duration
+}
+
 // TopDownRL is the RL-based rate limiter for the gRPC server.
 type TopDownRL struct {
-	maxTokens           int64
-	tokens              int64
-	refillRate          int64
-	lastRefill          time.Time
-	slo                 map[string]time.Duration
-	goodputCounter      int64
-	sloViolationCounter int64
-	currentGoodput      int64
-	// sloViolationHistory []int64
-	latencyHistory      []time.Duration
-	LastTailLatency95th time.Duration // Stores the 95th percentile latency
-	mutex               sync.Mutex
-	Debug               bool
+	slo        map[string]time.Duration
+	interfaces map[string]*InterfaceMetrics
+	mutex      sync.Mutex
+	Debug      bool
+	// maxTokens           int64
+	// tokens              int64
+	// refillRate          int64
+	// lastRefill          time.Time
+	// goodputCounter      int64
+	// sloViolationCounter int64
+	// currentGoodput      int64
+	// // sloViolationHistory []int64
+	// latencyHistory      []time.Duration
+	// LastTailLatency95th time.Duration // Stores the 95th percentile latency
 }
 
 // NewTopDownRL creates a new TopDownRL with the specified parameters.
 func NewTopDownRL(maxTokens, refillRate int64, slo map[string]time.Duration, debug bool) *TopDownRL {
+	// rl := &TopDownRL{
+	// 	maxTokens:      maxTokens,
+	// 	tokens:         maxTokens,
+	// 	refillRate:     refillRate,
+	// 	lastRefill:     time.Now(),
+	// 	slo:            slo,
+	// 	goodputCounter: 0,
+	// 	latencyHistory: make([]time.Duration, 0),
+	// 	Debug:          debug,
+	// }
 	rl := &TopDownRL{
-		maxTokens:      maxTokens,
-		tokens:         maxTokens,
-		refillRate:     refillRate,
-		lastRefill:     time.Now(),
-		slo:            slo,
-		goodputCounter: 0,
-		latencyHistory: make([]time.Duration, 0),
-		Debug:          debug,
+		slo:        slo,
+		interfaces: make(map[string]*InterfaceMetrics),
+		Debug:      debug,
+	}
+
+	// Initialize metrics for each API (method)
+	for methodName := range slo {
+		rl.interfaces[methodName] = &InterfaceMetrics{
+			MaxTokens:           maxTokens,
+			Tokens:              maxTokens,
+			RefillRate:          refillRate,
+			LastRefill:          time.Now(),
+			LatencyHistory:      make([]time.Duration, 0),
+			LastTailLatency95th: 0 * time.Millisecond,
+			GoodputCounter:      0,
+			SloViolationCounter: 0,
+			CurrentGoodput:      0,
+		}
 	}
 
 	rl.StartMetricsCollection()
@@ -46,22 +79,24 @@ func NewTopDownRL(maxTokens, refillRate int64, slo map[string]time.Duration, deb
 }
 
 // Allow checks if a request is allowed to proceed based on the token bucket algorithm.
-func (rl *TopDownRL) Allow(ctx context.Context) bool {
+func (rl *TopDownRL) Allow(ctx context.Context, methodName string) bool {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 
+	metrics := rl.interfaces[methodName] // Get metrics for the API
+
 	now := time.Now()
-	elapsed := now.Sub(rl.lastRefill).Seconds()
+	elapsed := now.Sub(metrics.LastRefill).Seconds()
 
 	// Calculate the number of tokens to refill (using integer arithmetic)
-	refillTokens := int64(elapsed * float64(rl.refillRate))
+	refillTokens := int64(elapsed * float64(metrics.RefillRate))
 	if refillTokens > 0 {
-		rl.tokens = intMin(rl.tokens+refillTokens, rl.maxTokens)
-		rl.lastRefill = now
+		metrics.Tokens = intMin(metrics.Tokens+refillTokens, metrics.MaxTokens)
+		metrics.LastRefill = now
 	}
 
-	if rl.tokens > 0 {
-		rl.tokens--
+	if metrics.Tokens > 0 {
+		metrics.Tokens--
 		return true
 	}
 	return false
@@ -72,13 +107,16 @@ func (rl *TopDownRL) postProcess(latency time.Duration, methodName string) {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 
+	metrics := rl.interfaces[methodName]
+
+	// Update goodput and SLO violation counter
 	if latency <= rl.slo[methodName] {
-		atomic.AddInt64(&rl.goodputCounter, 1)
+		atomic.AddInt64(&metrics.GoodputCounter, 1)
 	} else {
-		rl.sloViolationCounter++
+		metrics.SloViolationCounter++
 	}
 
-	rl.latencyHistory = append(rl.latencyHistory, latency)
+	metrics.LatencyHistory = append(metrics.LatencyHistory, latency)
 }
 
 // StartMetricsCollection starts a separate goroutine that saves metrics and calculates the 95th percentile tail latency every second.
@@ -90,15 +128,15 @@ func (rl *TopDownRL) StartMetricsCollection() {
 		for {
 			select {
 			case <-ticker.C:
-				rl.mutex.Lock()
 
 				// Calculate the 95th percentile tail latency and save it
-				rl.calculateTailLatency95th()
+				// loop through all the methods in interface map and calculate the 95th percentile tail latency
+				for methodName := range rl.interfaces {
+					rl.calculateTailLatency95th(methodName)
 
-				rl.mutex.Unlock()
-
-				// Save the metrics (goodput and latency) to history
-				rl.saveMetrics()
+					// Save the metrics (goodput and latency) to history
+					rl.saveMetrics(methodName)
+				}
 			}
 		}
 	}()
@@ -111,7 +149,7 @@ func (rl *TopDownRL) UnaryInterceptor(ctx context.Context, req interface{}, info
 	startTime := extractStartTime(ctx)
 
 	// Check if the request is allowed before handling it
-	if !rl.Allow(ctx) {
+	if !rl.Allow(ctx, methodName) {
 		// ResourceExhausted: use this status code if the rate limit is exceeded
 		return nil, status.Error(codes.ResourceExhausted, "Rate limit exceeded, request denied")
 	}

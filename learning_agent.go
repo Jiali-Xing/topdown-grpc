@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync/atomic"
 )
 
 // StartServer starts the HTTP server that handles GET and SET requests for metrics and rate limits.
@@ -22,17 +23,32 @@ func (rl *TopDownRL) StartServer(portn int) error {
 }
 
 // SetRateLimit sets the rate limit (token bucket refill rate) from an external source.
-func (rl *TopDownRL) SetRateLimit(rateLimit float64) {
+func (rl *TopDownRL) SetRateLimit(method string, rateLimit float64) {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
-	rl.refillRate = int64(rateLimit)
+	// rl.refillRate = int64(rateLimit)
+
+	if metrics, exists := rl.interfaces[method]; exists {
+		metrics.RefillRate = int64(rateLimit)
+		if rl.Debug {
+			log.Printf("[DEBUG] Set new rate limit for method '%s': %f\n", method, rateLimit)
+		}
+	} else {
+		log.Printf("[ERROR] Method '%s' not found when trying to set rate limit\n", method)
+	}
 }
 
 // GetMetrics returns the current goodput and latency.
-func (rl *TopDownRL) GetMetrics() (float64, float64) {
+func (rl *TopDownRL) GetMetrics(method string) (float64, float64) {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
-	return float64(rl.getGoodput()), float64(rl.getTailLatency95th().Milliseconds())
+
+	if metrics, exists := rl.interfaces[method]; exists {
+		return float64(atomic.LoadInt64(&metrics.CurrentGoodput)), float64(metrics.LastTailLatency95th)
+	}
+
+	log.Printf("[ERROR] Method '%s' not found when trying to get metrics\n", method)
+	return 0, 0
 }
 
 // handleSetRateLimit handles the SET requests to update the rate limit.
@@ -43,6 +59,13 @@ func (rl *TopDownRL) HandleSetRateLimit(w http.ResponseWriter, r *http.Request) 
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract the method from query parameters
+	method := r.URL.Query().Get("method")
+	if method == "" {
+		http.Error(w, "Missing 'method' parameter", http.StatusBadRequest)
 		return
 	}
 
@@ -58,7 +81,7 @@ func (rl *TopDownRL) HandleSetRateLimit(w http.ResponseWriter, r *http.Request) 
 		log.Printf("[DEBUG] Received new rate limit: %f\n", data.RateLimit)
 	}
 
-	rl.SetRateLimit(data.RateLimit)
+	rl.SetRateLimit(method, data.RateLimit)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -72,7 +95,14 @@ func (rl *TopDownRL) HandleGetMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	goodput, latency := rl.GetMetrics()
+	// Extract the method from query parameters
+	method := r.URL.Query().Get("method")
+	if method == "" {
+		http.Error(w, "Missing 'method' parameter", http.StatusBadRequest)
+		return
+	}
+
+	goodput, latency := rl.GetMetrics(method)
 
 	if rl.Debug {
 		log.Printf("[DEBUG] Returning metrics: Goodput=%f, Latency=%f\n", goodput, latency)
