@@ -20,7 +20,11 @@ func (rl *TopDownRL) GetMetrics(methodName string) (int64, time.Duration) {
 		log.Printf("[DEBUG] Fetching metrics for method: %s\n", methodName)
 	}
 
-	metrics := rl.getInterfaceMetrics(methodName)
+	metrics, err := rl.getInterfaceMetrics(methodName)
+	if err != nil {
+		log.Panicf("Failed to get interface metrics for method %s\n", methodName)
+	}
+
 	goodput := atomic.SwapInt64(&metrics.GoodputCounter, 0)
 
 	if rl.Debug {
@@ -39,7 +43,12 @@ func (rl *TopDownRL) SetRateLimit(methodName string, rateLimit int64) {
 		// Add debug log
 		log.Printf("[DEBUG] Setting new rate limit for method: %s, rateLimit: %f\n", methodName, rateLimit)
 	}
-	metrics := rl.getInterfaceMetrics(methodName)
+
+	metrics, err := rl.getInterfaceMetrics(methodName)
+	if err != nil {
+		log.Panicf("Failed to get interface metrics for method %s\n", methodName)
+	}
+
 	metrics.RefillRate = rateLimit
 
 	if rl.Debug {

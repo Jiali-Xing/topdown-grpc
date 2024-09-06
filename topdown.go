@@ -2,6 +2,7 @@ package topdown
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sort"
 	"sync"
@@ -59,20 +60,19 @@ func NewTopDownRL(slo map[string]time.Duration, maxTokens, refillRate int64, deb
 
 // getInterfaceMetrics retrieves metrics for an existing interface.
 // Returns nil if the interface does not exist.
-func (rl *TopDownRL) getInterfaceMetrics(methodName string) *InterfaceMetrics {
+func (rl *TopDownRL) getInterfaceMetrics(methodName string) (*InterfaceMetrics, error) {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 
 	// Check if the metrics exist for the method
-	if metrics, exists := rl.interfaces[methodName]; exists {
-		return metrics
+	metrics, exists := rl.interfaces[methodName]
+	if !exists {
+		if rl.Debug {
+			log.Printf("[DEBUG] Metrics for method '%s' do not exist.\n", methodName)
+		}
+		return nil, fmt.Errorf("metrics for method %s not found", methodName)
 	}
-
-	// If the metrics do not exist, return nil or handle the error accordingly
-	if rl.Debug {
-		log.Printf("[DEBUG] Metrics for method '%s' do not exist.\n", methodName)
-	}
-	return nil
+	return metrics, nil
 }
 
 // Allow checks if a request is allowed for the given interface based on the token bucket algorithm.
@@ -80,7 +80,13 @@ func (rl *TopDownRL) Allow(methodName string) bool {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 
-	metrics := rl.getInterfaceMetrics(methodName)
+	metrics, err := rl.getInterfaceMetrics(methodName)
+	if err != nil {
+		if rl.Debug {
+			log.Printf("[DEBUG] Request denied for method '%s'.\n", methodName)
+		}
+		return false
+	}
 	now := time.Now()
 	elapsed := now.Sub(metrics.LastRefill).Seconds()
 
@@ -95,6 +101,9 @@ func (rl *TopDownRL) Allow(methodName string) bool {
 		metrics.Tokens--
 		return true
 	}
+	if rl.Debug {
+		log.Printf("[DEBUG] Request denied for method '%s'. No tokens available.\n", methodName)
+	}
 	return false
 }
 
@@ -104,7 +113,10 @@ func (rl *TopDownRL) PostProcess(latency time.Duration, methodName string) {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 
-	metrics := rl.getInterfaceMetrics(methodName)
+	metrics, err := rl.getInterfaceMetrics(methodName)
+	if err != nil {
+		return
+	}
 
 	if latency <= rl.slo[methodName] {
 		atomic.AddInt64(&metrics.GoodputCounter, 1)
@@ -117,7 +129,11 @@ func (rl *TopDownRL) PostProcess(latency time.Duration, methodName string) {
 
 // calculateTailLatency95th calculates the 95th percentile tail latency for a given interface.
 func (rl *TopDownRL) calculateTailLatency95th(methodName string) time.Duration {
-	metrics := rl.getInterfaceMetrics(methodName)
+	metrics, err := rl.getInterfaceMetrics(methodName)
+	if err != nil {
+		return 0
+	}
+
 	if len(metrics.LatencyHistory) == 0 {
 		return 0
 	}
