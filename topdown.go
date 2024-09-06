@@ -2,126 +2,198 @@ package topdown
 
 import (
 	"context"
+	"fmt"
+	"log"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
-// TopDownRL is the RL-based rate limiter for the gRPC server.
-type TopDownRL struct {
-	maxTokens           int64
-	tokens              int64
-	refillRate          int64
-	lastRefill          time.Time
-	slo                 map[string]time.Duration
-	goodputCounter      int64
-	sloViolationCounter int64
-	currentGoodput      int64
-	// sloViolationHistory []int64
-	latencyHistory      []time.Duration
-	LastTailLatency95th time.Duration // Stores the 95th percentile latency
-	mutex               sync.Mutex
-	Debug               bool
+// InterfaceMetrics stores metrics for each interface (e.g., method).
+type InterfaceMetrics struct {
+	MaxTokens           int64
+	Tokens              int64
+	RefillRate          int64
+	LastRefill          time.Time
+	GoodputCounter      int64
+	SloViolationCounter int64
+	LatencyHistory      []time.Duration
+	LastTailLatency95th time.Duration
 }
 
-// NewTopDownRL creates a new TopDownRL with the specified parameters.
-func NewTopDownRL(maxTokens, refillRate int64, slo map[string]time.Duration, debug bool) *TopDownRL {
+// TopDownRL manages rate limiting and metrics for multiple interfaces.
+type TopDownRL struct {
+	interfaces map[string]*InterfaceMetrics // Track metrics per interface
+	slo        map[string]time.Duration     // SLO per interface
+	mutex      sync.Mutex
+	Debug      bool
+}
+
+// NewTopDownRL creates a new TopDownRL with the specified SLOs, max tokens, refill rate, and debug flag.
+func NewTopDownRL(slo map[string]time.Duration, maxTokens, refillRate int64, debug bool) *TopDownRL {
 	rl := &TopDownRL{
-		maxTokens:      maxTokens,
-		tokens:         maxTokens,
-		refillRate:     refillRate,
-		lastRefill:     time.Now(),
-		slo:            slo,
-		goodputCounter: 0,
-		latencyHistory: make([]time.Duration, 0),
-		Debug:          debug,
+		interfaces: make(map[string]*InterfaceMetrics),
+		slo:        slo,
+		Debug:      debug,
+	}
+
+	// Initialize each interface with the provided maxTokens and refillRate
+	for methodName := range slo {
+		rl.interfaces[methodName] = &InterfaceMetrics{
+			MaxTokens:      maxTokens,
+			Tokens:         maxTokens,
+			RefillRate:     refillRate,
+			LastRefill:     time.Now(),
+			LatencyHistory: make([]time.Duration, 0),
+		}
 	}
 
 	rl.StartMetricsCollection()
 	return rl
 }
 
-// Allow checks if a request is allowed to proceed based on the token bucket algorithm.
-func (rl *TopDownRL) Allow(ctx context.Context) bool {
+// getInterfaceMetrics retrieves metrics for an existing interface.
+// Returns nil if the interface does not exist.
+func (rl *TopDownRL) getInterfaceMetrics(methodName string) (*InterfaceMetrics, error) {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 
-	now := time.Now()
-	elapsed := now.Sub(rl.lastRefill).Seconds()
+	// Check if the metrics exist for the method
+	metrics, exists := rl.interfaces[methodName]
+	if !exists {
+		if rl.Debug {
+			log.Printf("[DEBUG] Metrics for method '%s' do not exist.\n", methodName)
+		}
+		return nil, fmt.Errorf("metrics for method %s not found", methodName)
+	}
+	return metrics, nil
+}
 
-	// Calculate the number of tokens to refill (using integer arithmetic)
-	refillTokens := int64(elapsed * float64(rl.refillRate))
+// Allow checks if a request is allowed for the given interface based on the token bucket algorithm.
+func (rl *TopDownRL) Allow(methodName string) bool {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	metrics, err := rl.getInterfaceMetrics(methodName)
+	if err != nil {
+		if rl.Debug {
+			log.Printf("[DEBUG] Request denied for method '%s'.\n", methodName)
+		}
+		return false
+	}
+	now := time.Now()
+	elapsed := now.Sub(metrics.LastRefill).Seconds()
+
+	// Calculate the number of tokens to refill
+	refillTokens := int64(elapsed * float64(metrics.RefillRate))
 	if refillTokens > 0 {
-		rl.tokens = intMin(rl.tokens+refillTokens, rl.maxTokens)
-		rl.lastRefill = now
+		metrics.Tokens = intMin(metrics.Tokens+refillTokens, metrics.MaxTokens)
+		metrics.LastRefill = now
 	}
 
-	if rl.tokens > 0 {
-		rl.tokens--
+	if metrics.Tokens > 0 {
+		metrics.Tokens--
 		return true
+	}
+	if rl.Debug {
+		log.Printf("[DEBUG] Request denied for method '%s'. No tokens available.\n", methodName)
 	}
 	return false
 }
 
-// postProcess handles the logic after a request has been processed to update goodput, SLO violations, and latency.
-func (rl *TopDownRL) postProcess(latency time.Duration, methodName string) {
+// postProcess updates goodput, SLO violations, and latency for a given interface.
+func (rl *TopDownRL) PostProcess(latency time.Duration, methodName string) {
+	// lock the mutex to update the metrics
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 
-	if latency <= rl.slo[methodName] {
-		atomic.AddInt64(&rl.goodputCounter, 1)
-	} else {
-		rl.sloViolationCounter++
+	metrics, err := rl.getInterfaceMetrics(methodName)
+	if err != nil {
+		return
 	}
 
-	rl.latencyHistory = append(rl.latencyHistory, latency)
+	if latency <= rl.slo[methodName] {
+		atomic.AddInt64(&metrics.GoodputCounter, 1)
+	} else {
+		metrics.SloViolationCounter++
+	}
+
+	metrics.LatencyHistory = append(metrics.LatencyHistory, latency)
 }
 
-// StartMetricsCollection starts a separate goroutine that saves metrics and calculates the 95th percentile tail latency every second.
+// calculateTailLatency95th calculates the 95th percentile tail latency for a given interface.
+func (rl *TopDownRL) calculateTailLatency95th(methodName string) time.Duration {
+	metrics, err := rl.getInterfaceMetrics(methodName)
+	if err != nil {
+		return 0
+	}
+
+	if len(metrics.LatencyHistory) == 0 {
+		return 0
+	}
+
+	// Sort latencies to find the 95th percentile
+	sort.Slice(metrics.LatencyHistory, func(i, j int) bool {
+		return metrics.LatencyHistory[i] < metrics.LatencyHistory[j]
+	})
+
+	index := int(float64(len(metrics.LatencyHistory)) * 0.95)
+	if index >= len(metrics.LatencyHistory) {
+		index = len(metrics.LatencyHistory) - 1
+	}
+
+	// Store the calculated 95th percentile latency
+	metrics.LastTailLatency95th = metrics.LatencyHistory[index]
+	metrics.LatencyHistory = metrics.LatencyHistory[:0] // Clear history for next second
+	return metrics.LastTailLatency95th
+}
+
+// StartMetricsCollection calculates the 95th percentile tail latency for each interface every second.
 func (rl *TopDownRL) StartMetricsCollection() {
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 
-		for {
-			select {
-			case <-ticker.C:
-				rl.mutex.Lock()
-
-				// Calculate the 95th percentile tail latency and save it
-				rl.calculateTailLatency95th()
-
-				rl.mutex.Unlock()
-
-				// Save the metrics (goodput and latency) to history
-				rl.saveMetrics()
+		for range ticker.C {
+			rl.mutex.Lock()
+			for methodName := range rl.interfaces {
+				rl.calculateTailLatency95th(methodName)
 			}
+			rl.mutex.Unlock()
 		}
 	}()
 }
 
 // UnaryInterceptor is the unary gRPC interceptor function that enforces rate limiting.
 func (rl *TopDownRL) UnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-	// Extract the method name and start time
-	methodName := getMethodName(ctx)
-	startTime := extractStartTime(ctx)
+	// Extract the method name from the context
 
-	// Check if the request is allowed before handling it
-	if !rl.Allow(ctx) {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, status.Errorf(codes.InvalidArgument, "missing metadata")
+	}
+
+	methodName := md["method"][0]
+	startTime := time.Now()
+
+	// Check if the request is allowed to proceed
+	if !rl.Allow(methodName) {
 		// ResourceExhausted: use this status code if the rate limit is exceeded
 		return nil, status.Error(codes.ResourceExhausted, "Rate limit exceeded, request denied")
 	}
 
-	// Proceed with the handler to get the response
+	// Proceed with the handler
 	resp, err := handler(ctx, req)
 
-	// Calculate the response latency and update metrics after handling the request
+	// Calculate the request latency and update metrics after the request is processed
 	latency := time.Since(startTime)
-	rl.postProcess(latency, methodName)
+	rl.PostProcess(latency, methodName)
 
 	return resp, err
 }

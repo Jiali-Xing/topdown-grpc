@@ -5,12 +5,62 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync/atomic"
+	"time"
 )
+
+// GetMetrics retrieves goodput and 95th percentile latency for a given interface.
+func (rl *TopDownRL) GetMetrics(methodName string) (int64, time.Duration) {
+
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+
+	// Add debug log
+	if rl.Debug {
+		log.Printf("[DEBUG] Fetching metrics for method: %s\n", methodName)
+	}
+
+	metrics, err := rl.getInterfaceMetrics(methodName)
+	if err != nil {
+		log.Panicf("Failed to get interface metrics for method %s\n", methodName)
+	}
+
+	goodput := atomic.SwapInt64(&metrics.GoodputCounter, 0)
+
+	if rl.Debug {
+		// Add debug log
+		log.Printf("[DEBUG] Goodput for method %s: %d, Tail Latency: %s\n", methodName, goodput, metrics.LastTailLatency95th)
+	}
+
+	return goodput, metrics.LastTailLatency95th
+}
+
+// SetRateLimit sets the rate limit for a specific interface.
+func (rl *TopDownRL) SetRateLimit(methodName string, rateLimit int64) {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
+	if rl.Debug {
+		// Add debug log
+		log.Printf("[DEBUG] Setting new rate limit for method: %s, rateLimit: %f\n", methodName, rateLimit)
+	}
+
+	metrics, err := rl.getInterfaceMetrics(methodName)
+	if err != nil {
+		log.Panicf("Failed to get interface metrics for method %s\n", methodName)
+	}
+
+	metrics.RefillRate = rateLimit
+
+	if rl.Debug {
+		// Add debug log
+		log.Printf("[DEBUG] New rate limit for method: %s, rateLimit: %f\n", methodName, metrics.RefillRate)
+	}
+}
 
 // StartServer starts the HTTP server that handles GET and SET requests for metrics and rate limits.
 func (rl *TopDownRL) StartServer(portn int) error {
-	http.HandleFunc("/metrics", rl.HandleGetMetrics)    // Handles GET requests to fetch metrics
-	http.HandleFunc("/set_rate", rl.HandleSetRateLimit) // Handles POST requests to set the rate limit
+	http.HandleFunc("/metrics", rl.HandleGetMetrics)    // Handles GET requests to fetch metrics per interface
+	http.HandleFunc("/set_rate", rl.HandleSetRateLimit) // Handles POST requests to set the rate limit per interface
 
 	portStr := fmt.Sprintf(":%d", portn)
 	log.Println("Starting Topdown RL agent server on", portStr)
@@ -21,21 +71,7 @@ func (rl *TopDownRL) StartServer(portn int) error {
 	return nil
 }
 
-// SetRateLimit sets the rate limit (token bucket refill rate) from an external source.
-func (rl *TopDownRL) SetRateLimit(rateLimit float64) {
-	rl.mutex.Lock()
-	defer rl.mutex.Unlock()
-	rl.refillRate = int64(rateLimit)
-}
-
-// GetMetrics returns the current goodput and latency.
-func (rl *TopDownRL) GetMetrics() (float64, float64) {
-	rl.mutex.Lock()
-	defer rl.mutex.Unlock()
-	return float64(rl.getGoodput()), float64(rl.getTailLatency95th().Milliseconds())
-}
-
-// handleSetRateLimit handles the SET requests to update the rate limit.
+// handleSetRateLimit handles the POST requests to update the rate limit for a specific interface.
 func (rl *TopDownRL) HandleSetRateLimit(w http.ResponseWriter, r *http.Request) {
 	if rl.Debug {
 		log.Println("[DEBUG] HandleSetRateLimit called")
@@ -46,46 +82,65 @@ func (rl *TopDownRL) HandleSetRateLimit(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	methodName := r.URL.Query().Get("method")
+	if methodName == "" {
+		http.Error(w, "Method not specified", http.StatusBadRequest)
+		return
+	}
+
 	var data struct {
-		RateLimit float64 `json:"rate_limit"`
+		RateLimit int64 `json:"rate_limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
 		http.Error(w, "Failed to decode request body", http.StatusBadRequest)
 		return
 	}
 
-	if rl.Debug {
-		log.Printf("[DEBUG] Received new rate limit: %f\n", data.RateLimit)
-	}
-
-	rl.SetRateLimit(data.RateLimit)
+	rl.SetRateLimit(methodName, data.RateLimit)
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleGetMetrics handles the GET requests to return goodput and latency.
+// handleGetMetrics handles the GET requests to return goodput and latency for a specific interface.
 func (rl *TopDownRL) HandleGetMetrics(w http.ResponseWriter, r *http.Request) {
 	if rl.Debug {
 		log.Println("[DEBUG] HandleGetMetrics called")
 	}
+
 	if r.Method != http.MethodGet {
+		log.Println("[ERROR] Invalid request method for /metrics:", r.Method)
 		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
 		return
 	}
 
-	goodput, latency := rl.GetMetrics()
+	methodName := r.URL.Query().Get("method")
+	if methodName == "" {
+		log.Println("[ERROR] No method provided in /metrics request")
+		http.Error(w, "Method not specified", http.StatusBadRequest)
+		return
+	}
+
+	goodput, latency := rl.GetMetrics(methodName)
 
 	if rl.Debug {
-		log.Printf("[DEBUG] Returning metrics: Goodput=%f, Latency=%f\n", goodput, latency)
+		log.Printf("[DEBUG] Returning metrics for method=%s: Goodput=%f, Latency=%f\n", methodName, goodput, latency)
 	}
 
 	response := struct {
-		Goodput float64 `json:"goodput"`
-		Latency float64 `json:"latency"`
+		Goodput int64         `json:"goodput"`
+		Latency time.Duration `json:"latency"`
 	}{
 		Goodput: goodput,
 		Latency: latency,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Println("[ERROR] Failed to encode response:", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+	if rl.Debug {
+		log.Println("[DEBUG] Successfully returned metrics for method", methodName)
+	}
 }
