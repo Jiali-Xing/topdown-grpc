@@ -29,30 +29,10 @@ type TopDownRL struct {
 	interfaces map[string]*InterfaceMetrics
 	mutex      sync.Mutex
 	Debug      bool
-	// maxTokens           int64
-	// tokens              int64
-	// refillRate          int64
-	// lastRefill          time.Time
-	// goodputCounter      int64
-	// sloViolationCounter int64
-	// currentGoodput      int64
-	// // sloViolationHistory []int64
-	// latencyHistory      []time.Duration
-	// LastTailLatency95th time.Duration // Stores the 95th percentile latency
 }
 
 // NewTopDownRL creates a new TopDownRL with the specified parameters.
 func NewTopDownRL(maxTokens, refillRate int64, slo map[string]time.Duration, debug bool) *TopDownRL {
-	// rl := &TopDownRL{
-	// 	maxTokens:      maxTokens,
-	// 	tokens:         maxTokens,
-	// 	refillRate:     refillRate,
-	// 	lastRefill:     time.Now(),
-	// 	slo:            slo,
-	// 	goodputCounter: 0,
-	// 	latencyHistory: make([]time.Duration, 0),
-	// 	Debug:          debug,
-	// }
 	rl := &TopDownRL{
 		slo:        slo,
 		interfaces: make(map[string]*InterfaceMetrics),
