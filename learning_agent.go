@@ -44,7 +44,7 @@ func (rl *TopDownRL) GetMetrics(method string) (float64, float64) {
 	defer rl.mutex.Unlock()
 
 	if metrics, exists := rl.interfaces[method]; exists {
-		return float64(atomic.LoadInt64(&metrics.CurrentGoodput)), float64(metrics.LastTailLatency95th)
+		return float64(atomic.LoadInt64(&metrics.CurrentGoodput)), float64(metrics.LastTailLatency95th.Milliseconds())
 	}
 
 	log.Printf("[ERROR] Method '%s' not found when trying to get metrics\n", method)
